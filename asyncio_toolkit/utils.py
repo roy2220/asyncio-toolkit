@@ -180,7 +180,7 @@ async def wait_for1(coro: Coroutine[_T], timeout: float, *
         return exception.value
 
     if value is None:
-        return await wait_for2(loop.create_task(coro), timeout, loop=loop)
+        return await wait_for2(coro, timeout, loop=loop)
 
     assert asyncio.isfuture(value), repr(value)
     future: asyncio.Future = value
@@ -224,13 +224,15 @@ async def wait_for1(coro: Coroutine[_T], timeout: float, *
         loop.call_soon(loop.create_task(coro).cancel)
         raise
 
-    return await wait_for2(loop.create_task(coro), deadline - loop.time(), loop=loop)
+    return await wait_for2(coro, deadline - loop.time(), loop=loop)
 
 
-def wait_for2(future: "asyncio.Future[_T]", timeout: float, *
+def wait_for2(coro_or_future: typing.Awaitable[_T], timeout: float, *
               , loop: typing.Optional[asyncio.AbstractEventLoop]=None) -> "asyncio.Future[_T]":
     if loop is None:
         loop = asyncio.get_event_loop()
+
+    future = asyncio.ensure_future(coro_or_future, loop=loop)
 
     if future.done():
         return future
