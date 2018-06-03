@@ -13,6 +13,7 @@ class Semaphore:
         self._min_value = min_value
         self._max_value = max_value
         self._value = value
+        self._loop = loop
         self._next_down_waiter_id = 0
         self._down_waiters: collections.OrderedDict[int, asyncio.Future[None]] = collections\
             .OrderedDict()
@@ -20,7 +21,7 @@ class Semaphore:
         self._up_waiters: collections.OrderedDict[int, asyncio.Future[None]] = collections\
             .OrderedDict()
         self._is_closed = False
-        self._loop = loop
+        self._version = 0
 
     def reset(self, min_value: int, max_value: int, value: int):
         assert self._is_closed
@@ -42,11 +43,12 @@ class Semaphore:
             while True:
                 waiter: asyncio.Future[None] = self._loop.create_future()
                 self._down_waiters[waiter_id] = waiter
+                version = self._version
 
                 try:
                     await waiter
                 except Exception:
-                    if not self._is_closed:
+                    if self._version == version:
                         waiter_is_first = next(iter(self._down_waiters)) == waiter_id
                         del self._down_waiters[waiter_id]
 
@@ -55,7 +57,7 @@ class Semaphore:
 
                     raise
 
-                if self._is_closed:
+                if not self._version == version:
                     raise asyncio.CancelledError()
 
                 if self._value > self._min_value:
@@ -190,6 +192,7 @@ class Semaphore:
         self._down_waiters.clear()
         self._up_waiters.clear()
         self._is_closed = True
+        self._version += 1
 
     def get_max_value(self) -> int:
         return self._max_value

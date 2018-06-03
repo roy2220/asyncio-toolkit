@@ -2,44 +2,62 @@ import asyncio
 import functools
 import inspect
 import itertools
-import sys
 import typing
 
 from .typing import Coroutine
 
 
-_PYVER = sys.hexversion >> 16
-
 _T = typing.TypeVar("_T")
 
 
 class Future(asyncio.Future, typing.Generic[_T]):
+    _immediate_done_callbacks: typing.List[typing.Callable[["asyncio.Future[_T]"], None]] = []
     _shieldee: typing.Optional["asyncio.Future[_T]"] = None
 
     def __init__(self, *, loop=None) -> None:
         super().__init__(loop=loop)
-        self._immediate_done_callbacks: typing.List[typing.Callable[["asyncio.Future[_T]"]
-                                                                    , None]] = []
 
     def add_immediate_done_callback(self, immediate_done_callback: typing.Callable[\
         ["asyncio.Future[_T]"], None]) -> None:
-        self._immediate_done_callbacks.append(immediate_done_callback)
+        if len(self._immediate_done_callbacks) == 0:
+            self._immediate_done_callbacks = [immediate_done_callback]
+        else:
+            self._immediate_done_callbacks.append(immediate_done_callback)
 
     def remove_immediate_done_callback(self, immediate_done_callback: typing.Callable\
         [["asyncio.Future[_T]"], None]) -> None:
-        self._immediate_done_callbacks.remove(immediate_done_callback)
+        assert immediate_done_callback in self._immediate_done_callbacks
 
-    if _PYVER >= 0x306:
-        def _schedule_callbacks(self):
-            if len(self._immediate_done_callbacks) >= 1:
-                for immediate_done_callback in self._immediate_done_callbacks:
-                    immediate_done_callback(self)
+        if len(self._immediate_done_callbacks) == 1:
+            delattr(self, "_immediate_done_callbacks")
+        else:
+            self._immediate_done_callbacks.remove(immediate_done_callback)
 
-                self._immediate_done_callbacks.clear()
+    def set_result(self, result: _T) -> None:
+        super().set_result(result)
+        self._schedule_immediate_done_callbacks()
 
-            super()._schedule_callbacks()
-    else:
-        assert False
+    def set_exception(self, exception: typing.Union[BaseException
+                                                    , typing.Type[BaseException]]) -> None:
+        super().set_exception(exception)
+        self._schedule_immediate_done_callbacks()
+
+    def cancel(self) -> bool:
+        ok = super().cancel()
+
+        if ok:
+            self._schedule_immediate_done_callbacks()
+
+        return ok
+
+    def _schedule_immediate_done_callbacks(self) -> None:
+        if len(self._immediate_done_callbacks) == 0:
+            return
+
+        for callback in self._immediate_done_callbacks:
+            callback(self)
+
+        delattr(self, "_immediate_done_callbacks")
 
 
 async def delay_cancellation(coro_or_future: typing.Awaitable[_T], *
