@@ -214,7 +214,7 @@ async def wait_for1(coro: Coroutine[_T], timeout: float, *
     else:
         future.add_done_callback(callback1)
 
-    waiter: Future[_T] = Future(loop=loop)
+    waiter: Future[None] = Future(loop=loop)
 
     def callback2(_) -> None:
         if not future.done():

@@ -1,4 +1,4 @@
-from distutils.core import setup
+from distutils.core import setup, Extension
 import re
 import typing
 
@@ -43,6 +43,7 @@ setup(
     version=get_version(),
     description="AsyncIO Toolkit",
     packages=["asyncio_toolkit"],
+    ext_modules=[Extension("asyncio_toolkit._asyncio", ["modules/_asynciomodule.c"])],
     python_requires=">=3.6.0",
     **parse_requirements(),
 )
