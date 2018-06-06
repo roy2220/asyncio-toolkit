@@ -10,56 +10,6 @@ from .typing import Coroutine
 _T = typing.TypeVar("_T")
 
 
-class Future(asyncio.Future, typing.Generic[_T]):
-    _immediate_done_callbacks: typing.List[typing.Callable[["asyncio.Future[_T]"], None]] = []
-    _shieldee: typing.Optional["asyncio.Future[_T]"] = None
-
-    def __init__(self, *, loop=None) -> None:
-        super().__init__(loop=loop)
-
-    def add_immediate_done_callback(self, immediate_done_callback: typing.Callable[\
-        ["asyncio.Future[_T]"], None]) -> None:
-        if len(self._immediate_done_callbacks) == 0:
-            self._immediate_done_callbacks = [immediate_done_callback]
-        else:
-            self._immediate_done_callbacks.append(immediate_done_callback)
-
-    def remove_immediate_done_callback(self, immediate_done_callback: typing.Callable\
-        [["asyncio.Future[_T]"], None]) -> None:
-        assert immediate_done_callback in self._immediate_done_callbacks
-
-        if len(self._immediate_done_callbacks) == 1:
-            delattr(self, "_immediate_done_callbacks")
-        else:
-            self._immediate_done_callbacks.remove(immediate_done_callback)
-
-    def set_result(self, result: _T) -> None:
-        super().set_result(result)
-        self._schedule_immediate_done_callbacks()
-
-    def set_exception(self, exception: typing.Union[BaseException
-                                                    , typing.Type[BaseException]]) -> None:
-        super().set_exception(exception)
-        self._schedule_immediate_done_callbacks()
-
-    def cancel(self) -> bool:
-        ok = super().cancel()
-
-        if ok:
-            self._schedule_immediate_done_callbacks()
-
-        return ok
-
-    def _schedule_immediate_done_callbacks(self) -> None:
-        if len(self._immediate_done_callbacks) == 0:
-            return
-
-        for callback in self._immediate_done_callbacks:
-            callback(self)
-
-        delattr(self, "_immediate_done_callbacks")
-
-
 async def delay_cancellation(coro_or_future: typing.Awaitable[_T], *
                              , loop: typing.Optional[asyncio.AbstractEventLoop]=None) -> _T:
     if loop is None:
@@ -70,7 +20,7 @@ async def delay_cancellation(coro_or_future: typing.Awaitable[_T], *
 
     while True:
         try:
-            result = await shield(future)
+            result = await shield(future, loop=loop)
         except asyncio.CancelledError:
             if future.cancelled():
                 raise
@@ -80,7 +30,7 @@ async def delay_cancellation(coro_or_future: typing.Awaitable[_T], *
             break
 
     if was_cancelled:
-        raise asyncio.CancelledError()
+        asyncio.Task.current_task(loop=loop).cancel()
 
     return result
 
@@ -95,7 +45,7 @@ async def atomize_cancellation(coro: Coroutine[_T], *
 
     while True:
         try:
-            result = await shield(task)
+            result = await shield(task, loop=loop)
         except asyncio.CancelledError:
             if task.cancelled():
                 raise
@@ -109,7 +59,7 @@ async def atomize_cancellation(coro: Coroutine[_T], *
             break
 
     if was_cancelled:
-        raise asyncio.CancelledError()
+        asyncio.Task.current_task(loop=loop).cancel()
 
     return result
 
@@ -133,10 +83,7 @@ def shield(coro_or_future: typing.Awaitable[_T], *
     if loop is None:
         loop = asyncio.get_event_loop()
 
-    if isinstance(coro_or_future, Future) and coro_or_future._shieldee is not None:
-        future = coro_or_future._shieldee
-    else:
-        future = asyncio.ensure_future(coro_or_future, loop=loop)
+    future = asyncio.ensure_future(coro_or_future, loop=loop)
 
     if future.done():
         return future
@@ -158,94 +105,12 @@ def shield(coro_or_future: typing.Awaitable[_T], *
             else:
                 waiter.set_exception(exception)
 
-    if isinstance(future, Future):
-        future.add_immediate_done_callback(callback)
-    else:
-        future.add_done_callback(callback)
-
-    waiter: Future[_T] = Future(loop=loop)
-    waiter._shieldee = future
+    future.add_immediate_done_callback(callback)  # type: ignore
+    waiter: asyncio.Future[_T] = loop.create_future()
     return waiter
 
 
-def wait_for(coro_or_future: typing.Awaitable[_T], timeout: float, *
-             , loop: typing.Optional[asyncio.AbstractEventLoop]=None) -> typing.Awaitable[_T]:
-    if loop is None:
-        loop = asyncio.get_event_loop()
-
-    result: typing.Awaitable[_T]
-
-    if asyncio.iscoroutine(coro_or_future):
-        coro: Coroutine[_T] = coro_or_future  # type: ignore
-        result = wait_for1(coro, timeout, loop=loop)
-    elif asyncio.isfuture(coro_or_future):
-        future: asyncio.Future[_T] = coro_or_future  # type: ignore
-        result = wait_for2(future, timeout, loop=loop)
-    else:
-        assert False, repr(coro_or_future)
-
-    return result
-
-
-async def wait_for1(coro: Coroutine[_T], timeout: float, *
-                    , loop: typing.Optional[asyncio.AbstractEventLoop]=None) -> _T:
-    if loop is None:
-        loop = asyncio.get_event_loop()
-
-    try:
-        value = coro.send(None)
-    except StopIteration as exception:
-        return exception.value
-
-    if value is None:
-        return await wait_for2(coro, timeout, loop=loop)
-
-    assert asyncio.isfuture(value), repr(value)
-    future: asyncio.Future = value
-
-    def callback1(future: "asyncio.Future") -> None:
-        if waiter.done():
-            return
-
-        waiter.set_result(None)
-
-    if isinstance(future, Future):
-        future.add_immediate_done_callback(callback1)
-    else:
-        future.add_done_callback(callback1)
-
-    waiter: Future[None] = Future(loop=loop)
-
-    def callback2(_) -> None:
-        if not future.done():
-            if isinstance(future, Future):
-                future.remove_immediate_done_callback(callback1)
-            else:
-                future.remove_done_callback(callback1)
-
-            future.cancel()
-
-        timer_handle.cancel()
-
-    def callback3() -> None:
-        if waiter.done():
-            return
-
-        waiter.set_exception(asyncio.TimeoutError())
-
-    deadline = loop.time() + timeout
-    timer_handle = loop.call_at(deadline, callback3)
-
-    try:
-        await waiter
-    except Exception:
-        loop.call_soon(loop.create_task(coro).cancel)
-        raise
-
-    return await wait_for2(coro, deadline - loop.time(), loop=loop)
-
-
-def wait_for2(coro_or_future: typing.Awaitable[_T], timeout: float, *
+def wait_for1(coro_or_future: typing.Awaitable[_T], timeout: float, *
               , loop: typing.Optional[asyncio.AbstractEventLoop]=None) -> "asyncio.Future[_T]":
     if loop is None:
         loop = asyncio.get_event_loop()
@@ -276,25 +141,17 @@ def wait_for2(coro_or_future: typing.Awaitable[_T], timeout: float, *
             else:
                 waiter.set_exception(exception)
 
-    if isinstance(future, Future):
-        future.add_immediate_done_callback(callback1)
-    else:
-        future.add_done_callback(callback1)
-
-    waiter: Future[_T] = Future(loop=loop)
+    future.add_immediate_done_callback(callback1)  # type: ignore
+    waiter: asyncio.Future[_T] = loop.create_future()
 
     def callback2(_) -> None:
         if not future.done():
-            if isinstance(future, Future):
-                future.remove_immediate_done_callback(callback1)
-            else:
-                future.remove_done_callback(callback1)
-
+            future.remove_immediate_done_callback(callback1)  # type: ignore
             future.cancel()
 
         timer_handle.cancel()
 
-    waiter.add_immediate_done_callback(callback2)
+    waiter.add_immediate_done_callback(callback2)  # type: ignore
 
     def callback3() -> None:
         if waiter.done():
@@ -304,6 +161,58 @@ def wait_for2(coro_or_future: typing.Awaitable[_T], timeout: float, *
 
     timer_handle = loop.call_later(timeout, callback3)
     return waiter
+
+
+async def wait_for2(coro: Coroutine[_T], timeout: float, *
+                    , loop: typing.Optional[asyncio.AbstractEventLoop]=None) -> _T:
+    if loop is None:
+        loop = asyncio.get_event_loop()
+
+    try:
+        value = coro.send(None)
+    except StopIteration as exception:
+        return exception.value
+
+    if value is None:
+        return await wait_for1(coro, timeout, loop=loop)
+
+    assert asyncio.isfuture(value), repr(value)
+    future: asyncio.Future = value
+
+    def callback1(future: "asyncio.Future") -> None:
+        if waiter.done():
+            return
+
+        waiter.set_result(None)
+
+    future.add_immediate_done_callback(callback1)  # type: ignore
+    waiter: asyncio.Future[None] = loop.create_future()
+
+    def callback2(_) -> None:
+        if not future.done():
+            future.remove_immediate_done_callback(callback1)  # type: ignore
+            future.cancel()
+
+        timer_handle.cancel()
+
+    waiter.add_immediate_done_callback(callback2)  # type: ignore
+
+    def callback3() -> None:
+        if waiter.done():
+            return
+
+        waiter.set_exception(asyncio.TimeoutError())
+
+    deadline = loop.time() + timeout
+    timer_handle = loop.call_at(deadline, callback3)
+
+    try:
+        await waiter
+    except Exception:
+        loop.call_soon(loop.create_task(coro).cancel)
+        raise
+
+    return await wait_for1(coro, deadline - loop.time(), loop=loop)
 
 
 def wait_for_any(coros_and_futures: typing.Iterable[typing.Awaitable]
@@ -322,7 +231,7 @@ def wait_for_any(coros_and_futures: typing.Iterable[typing.Awaitable]
 
             return future
 
-    waiter: Future
+    waiter: asyncio.Future
 
     if timeout is None:
         def callback1(future: "asyncio.Future") -> None:
@@ -343,24 +252,17 @@ def wait_for_any(coros_and_futures: typing.Iterable[typing.Awaitable]
                     waiter.set_exception(exception)
 
         for future in futures:
-            if isinstance(future, Future):
-                future.add_immediate_done_callback(callback1)
-            else:
-                future.add_done_callback(callback1)
+            future.add_immediate_done_callback(callback1)  # type: ignore
 
-        waiter = Future(loop=loop)
+        waiter = loop.create_future()
 
         def callback2(_) -> None:
             for future in futures:
                 if not future.done():
-                    if isinstance(future, Future):
-                        future.remove_immediate_done_callback(callback1)
-                    else:
-                        future.remove_done_callback(callback1)
-
+                    future.remove_immediate_done_callback(callback1)  # type: ignore
                     future.cancel()
 
-        waiter.add_immediate_done_callback(callback2)
+        waiter.add_immediate_done_callback(callback2)  # type: ignore
     else:
         if timeout <= 0.0:
             for future in futures:
@@ -386,26 +288,19 @@ def wait_for_any(coros_and_futures: typing.Iterable[typing.Awaitable]
                     waiter.set_exception(exception)
 
         for future in futures:
-            if isinstance(future, Future):
-                future.add_immediate_done_callback(callback1)
-            else:
-                future.add_done_callback(callback1)
+            future.add_immediate_done_callback(callback1)  # type: ignore
 
-        waiter = Future(loop=loop)
+        waiter = loop.create_future()
 
         def callback2(_) -> None:
             for future in futures:
                 if not future.done():
-                    if isinstance(future, Future):
-                        future.remove_immediate_done_callback(callback1)
-                    else:
-                        future.remove_done_callback(callback1)
-
-                future.cancel()
+                    future.remove_immediate_done_callback(callback1)  # type: ignore
+                    future.cancel()
 
             timer_handle.cancel()
 
-        waiter.add_immediate_done_callback(callback2)
+        waiter.add_immediate_done_callback(callback2)  # type: ignore
 
         def callback3() -> None:
             if waiter.done():
