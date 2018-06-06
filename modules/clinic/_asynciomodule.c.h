@@ -418,6 +418,24 @@ _asyncio_Task_cancel(TaskObj *self, PyObject *Py_UNUSED(ignored))
     return _asyncio_Task_cancel_impl(self);
 }
 
+PyDoc_STRVAR(_asyncio_Task_canceling__doc__,
+"canceling($self, /)\n"
+"--\n"
+"\n"
+"Return True if the future has been canceling.");
+
+#define _ASYNCIO_TASK_CANCELING_METHODDEF    \
+    {"canceling", (PyCFunction)_asyncio_Task_canceling, METH_NOARGS, _asyncio_Task_canceling__doc__},
+
+static PyObject *
+TaskObj_get_must_cancel(TaskObj *task);
+
+static PyObject *
+_asyncio_Task_canceling(TaskObj *self, PyObject *Py_UNUSED(ignored))
+{
+    return TaskObj_get_must_cancel(self);
+}
+
 PyDoc_STRVAR(_asyncio_Task_get_stack__doc__,
 "get_stack($self, /, *, limit=None)\n"
 "--\n"

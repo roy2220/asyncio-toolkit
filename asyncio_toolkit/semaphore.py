@@ -47,6 +47,9 @@ class Semaphore:
 
                 try:
                     await waiter
+
+                    if asyncio.Task.current_task(self._loop).canceling():  # type: ignore
+                        raise asyncio.CancelledError()
                 except Exception:
                     if self._version == version:
                         waiter_is_first = next(iter(self._down_waiters)) == waiter_id
@@ -106,6 +109,9 @@ class Semaphore:
 
                 try:
                     await waiter
+
+                    if asyncio.Task.current_task(self._loop).canceling():  # type: ignore
+                        raise asyncio.CancelledError()
                 except Exception:
                     if not self._is_closed:
                         waiter_is_first = next(iter(self._up_waiters)) == waiter_id

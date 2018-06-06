@@ -30,7 +30,7 @@ async def delay_cancellation(coro_or_future: typing.Awaitable[_T], *
             break
 
     if was_cancelled:
-        asyncio.Task.current_task(loop=loop).cancel()
+        asyncio.Task.current_task(loop).cancel()
 
     return result
 
@@ -59,7 +59,7 @@ async def atomize_cancellation(coro: Coroutine[_T], *
             break
 
     if was_cancelled:
-        asyncio.Task.current_task(loop=loop).cancel()
+        asyncio.Task.current_task(loop).cancel()
 
     return result
 
